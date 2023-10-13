@@ -117,6 +117,16 @@ impl Todo{
 		if std::ptr::eq(self, selected) {IO::set_colour(Colour::Default);}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width); }}
 	}
+	fn draw_details(&self, start: (usize, usize), width: usize){
+		let mut i = 0;
+		i+=write_str_with_width(&self.name, start, width);
+		IO::move_cur(start.0, start.1+i);
+		IO::write(&"=".repeat(width));
+		i+=1;
+		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
+		IO::move_cur(start.0, start.1+i);
+		IO::write(&"=".repeat(width));
+	}	
 }
 
 #[derive(Debug)]
@@ -164,6 +174,10 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 	}else{ return Ok(TermChar::Unknown(chr)); }
 }},Err(e) => { return Err(e); }}}
 
+struct Todos{
+	data: Vec<Todo>,
+	selected: Vec<usize>,
+}
 macro_rules! get_ptr{($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)=>{{
 	let mut curr = &($todos[$id[0]]);
 	for id_el in $id.iter().skip(1){curr = &curr.children[*id_el];}
@@ -180,28 +194,123 @@ macro_rules! get_parent_arr{($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)
 macro_rules! get_mut_parent_arr{($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)=>{
 	if $id.len() > 1 { &mut get_mut_ptr!($todos, &$id[..$id.len()-1]).children } else {&mut $todos}
 }}
-fn draw_vertical_line(height: usize, col: usize){
-	for i in 0..height{
-		IO::move_cur(col, i+1);
-		IO::write("|");
+impl Todos{
+	fn update_state(&mut self){
+		get_mut_ptr!(self.data, self.selected).state = match get_ptr!(self.data, self.selected).state{
+			TodoState::Done => TodoState::Todo,
+			TodoState::Todo => TodoState::Doing,
+			TodoState::Doing => TodoState::Done,
+		}
+	}
+	fn draw(&self, (width, height): (usize,usize)){
+		IO::move_cur(1,1);
+		let curr = get_ptr!(self.data, self.selected);
+		for todo in &self.data{ todo.draw(0, curr, (width/2)-1); }
+		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
+		draw_vertical_line(height, width/2, 1);
+		curr.draw_details(((width/2)+1,1), width/2);
+		IO::flush();
+	}
+	fn select_prev(&mut self){if self.selected.last() == Some(&0) {
+		if self.selected.len() > 1 { self.selected.pop(); }
+	} else {
+		*self.selected.last_mut().unwrap() -= 1;
+		let curr = get_ptr!(self.data, self.selected);
+		if curr.open && curr.children.len() > 0{
+			self.selected.push(curr.children.len()-1);
+		}
+	}}
+	fn select_next(&mut self){
+		let curr = get_ptr!(self.data, self.selected);
+		if curr.open && curr.children.len() > 0 { self.selected.push(0); } else {
+			let mut selected_tmp = &self.selected[..];
+			while
+				selected_tmp.len() > 0 &&
+				selected_tmp.last().unwrap()+1 >= get_parent_arr!(
+					self.data, selected_tmp
+				).len()
+			{selected_tmp = &selected_tmp[..selected_tmp.len()-1];}
+
+			if selected_tmp.len() > 0 {
+				self.selected.truncate(selected_tmp.len());
+				*self.selected.last_mut().unwrap() += 1;
+			}
+		}
+	}
+	fn close_sel(&mut self){get_mut_ptr!(self.data, self.selected).open = false;}
+	fn open_sel(&mut self){get_mut_ptr!(self.data, self.selected).open = true;}
+	fn move_sel_down(&mut self){
+		get_mut_ptr!(self.data, self.selected).open = false;
+		let index = *self.selected.last().unwrap();
+		let next_el = get_parent_arr!(self.data, self.selected).get(index+1);
+		if next_el.is_some() {
+			if next_el.unwrap().open{
+				let item = get_mut_parent_arr!(self.data, self.selected).remove(index);
+				get_mut_ptr!(self.data, self.selected).children.insert(0, item);
+				self.selected.push(0);
+			}else{
+				get_mut_parent_arr!(self.data, self.selected).swap(index, index+1);
+				*self.selected.last_mut().unwrap() += 1;
+			}
+		}else if self.selected.len() > 1{
+			let item = get_mut_parent_arr!(self.data, self.selected).remove(index);
+			self.selected.pop();
+			*self.selected.last_mut().unwrap() += 1;
+			get_mut_parent_arr!(self.data, self.selected).insert(
+				*self.selected.last().unwrap(), item
+			);
+		}
+	}
+	fn move_sel_up(&mut self){
+		get_mut_ptr!(self.data, self.selected).open = false;
+		if self.selected.len() > 1 && self.selected.last() == Some(&0){
+			self.selected.pop();
+			let item = get_mut_ptr!(self.data, self.selected).children.remove(0);
+
+			get_mut_parent_arr!(self.data, self.selected).insert(
+				*self.selected.last().unwrap(), item
+			);
+		}else if self.selected.last().unwrap() > &0{
+			let index = *self.selected.last().unwrap();
+			if get_parent_arr!(self.data, self.selected)[index-1].open{
+				let parent = get_mut_parent_arr!(self.data, self.selected);
+				*self.selected.last_mut().unwrap() -= 1;
+				self.selected.push(parent[index-1].children.len());
+				let item = parent.remove(index);
+				parent[index-1].children.push(item);
+			}else{
+				get_mut_parent_arr!(self.data, self.selected).swap(index, index-1);
+				*self.selected.last_mut().unwrap() -= 1;
+			}
+		}
 	}
 }
-fn draw_details(todo: Todo, start: usize, width: usize){
 
+fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
+	IO::move_cur(col, i);
+	IO::write("|");
+}}
+fn write_str_with_width(text: &String, start: (usize, usize), width: usize)->usize{
+	let mut i = 0;
+	let mut tmp_text = &text[..];
+	while tmp_text.len() > width{
+		IO::move_cur(start.0, start.1+i);
+		IO::write(&tmp_text[..width]);
+		tmp_text = &tmp_text[width..];
+		i+=1;
+	}
+	IO::move_cur(start.0, start.1+i);
+	IO::write(&tmp_text);
+	return i+1;
 }
 
-fn todo_loop(mut todos: Vec<Todo>){
+fn todo_loop(mut todos: Todos){
 	IO::set_up_screen();
-	if todos.len() == 0{todos.push(Todo::new("Add Todos".to_string()).into())}
-	let mut selected = vec!(0);
+	if todos.data.len() == 0{todos.data.push(Todo::new("Add Todos".to_string()).into())}
 	let mut size;
 	loop{
 		size = termsize::get().unwrap();
-		IO::move_cur(1,1);
-		for todo in &todos{ todo.draw(0,get_ptr!(todos, selected), (size.cols/2) as usize-1); }
-		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
-		draw_vertical_line(size.rows as usize, (size.cols/2) as usize);
-		IO::flush();
+		todos.draw((size.cols as usize, size.rows as usize));
 		if size.cols < 10{
 			eprintln!("Error. screen not wide enough.");
 			break;
@@ -209,90 +318,18 @@ fn todo_loop(mut todos: Vec<Todo>){
 		match getch() { Ok(chr) => {match chr{
 			TermChar::Char(chr) => match chr{
 				'\x03'=>break, // this is ctrl-c
-				' ' | '\r'=>get_mut_ptr!(todos, selected).state = match get_ptr!(todos, selected).state{
-					TodoState::Done => TodoState::Todo,
-					TodoState::Todo => TodoState::Doing,
-					TodoState::Doing => TodoState::Done,
-				},
+				'\r' | ' '=>todos.update_state(),
 				'\t'=>todo!(),
 				'\x1b'=>break, // this is esc
 				_=>{},// do nothing
 			},
 			TermChar::ControlChar(chr) => match chr{
-				ControlChar::Up=>if selected.last() == Some(&0) {
-					if selected.len() > 1 { selected.pop(); }
-				} else {
-					*selected.last_mut().unwrap() -= 1;
-					let curr = get_ptr!(todos, selected);
-					if curr.open && curr.children.len() > 0{
-						selected.push(curr.children.len()-1);
-					}
-				},
-				ControlChar::Down=>{
-					let curr = get_ptr!(todos, selected);
-					if curr.open && curr.children.len() > 0 { selected.push(0); }
-					else {
-						let mut selected_tmp = &selected[..];
-						while
-							selected_tmp.len() > 0 &&
-							selected_tmp.last().unwrap()+1 >= get_parent_arr!(
-								todos, selected_tmp
-							).len()
-						{selected_tmp = &selected_tmp[..selected_tmp.len()-1];}
-
-						if selected_tmp.len() > 0 {
-							selected.truncate(selected_tmp.len());
-							*selected.last_mut().unwrap() += 1;
-						}
-					}
-				},
-				ControlChar::Left=>get_mut_ptr!(todos, selected).open = false,
-				ControlChar::Right=>get_mut_ptr!(todos, selected).open = true,
-				ControlChar::CtrlDown=>{
-					get_mut_ptr!(todos, selected).open = false;
-					let index = *selected.last().unwrap();
-					let next_el = get_parent_arr!(todos, selected).get(index+1);
-					if next_el.is_some() {
-						if next_el.unwrap().open{
-							let item = get_mut_parent_arr!(todos, selected).remove(index);
-							get_mut_ptr!(todos, selected).children.insert(0, item);
-							selected.push(0);
-						}else{
-							get_mut_parent_arr!(todos, selected).swap(index, index+1);
-							*selected.last_mut().unwrap() += 1;
-						}
-					}else if selected.len() > 1{
-						let item = get_mut_parent_arr!(todos, selected).remove(index);
-						selected.pop();
-						*selected.last_mut().unwrap() += 1;
-						get_mut_parent_arr!(todos, selected).insert(
-							*selected.last().unwrap(), item
-						);
-					}
-				},
-				ControlChar::CtrlUp=>{
-					get_mut_ptr!(todos, selected).open = false;
-					if selected.len() > 1 && selected.last() == Some(&0){
-						selected.pop();
-						let item = get_mut_ptr!(todos, selected).children.remove(0);
-
-						get_mut_parent_arr!(todos, selected).insert(
-							*selected.last().unwrap(), item
-						);
-					}else if selected.last().unwrap() > &0{
-						let index = *selected.last().unwrap();
-						if get_parent_arr!(todos, selected)[index-1].open{
-							let parent = get_mut_parent_arr!(todos, selected);
-							*selected.last_mut().unwrap() -= 1;
-							selected.push(parent[index-1].children.len());
-							let item = parent.remove(index);
-							parent[index-1].children.push(item);
-						}else{
-							get_mut_parent_arr!(todos, selected).swap(index, index-1);
-							*selected.last_mut().unwrap() -= 1;
-						}
-					}
-				},
+				ControlChar::Up=>todos.select_prev(),
+				ControlChar::Down=>todos.select_next(),
+				ControlChar::Left=>todos.close_sel(),
+				ControlChar::Right=>todos.open_sel(),
+				ControlChar::CtrlDown=>todos.move_sel_down(),
+				ControlChar::CtrlUp=>todos.move_sel_up(),
 				_=>{},// do nothing
 			},
 			_=>{}, // do nothing
@@ -304,7 +341,7 @@ fn todo_loop(mut todos: Vec<Todo>){
 	IO::restore_screen();
 }
 
-fn main() {todo_loop(vec!(Todo{
+fn main() {todo_loop(Todos{data:vec!(Todo{
 	children: vec!(
 		Todo::new("child1".to_string()),
 		Todo::new("child2".to_string()),
@@ -313,4 +350,4 @@ fn main() {todo_loop(vec!(Todo{
 	description: String::new(),
 	state: TodoState::Doing,
 	open: true,
-},Todo::new("parent2".to_string()),));}
+},Todo::new("parent2".to_string()),), selected:vec!(0)});}
