@@ -284,6 +284,14 @@ impl Todos{
 			}
 		}
 	}
+	fn is_sel_valid(&self)->bool{
+		let mut curr = &self.data;
+		for i in &self.selected{
+			if *i >= curr.len(){ return false; }
+			curr = &curr[*i].children;
+		}
+		return true;
+	}
 }
 
 fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
@@ -307,6 +315,7 @@ fn write_str_with_width(text: &String, start: (usize, usize), width: usize)->usi
 fn todo_loop(mut todos: Todos){
 	IO::set_up_screen();
 	if todos.data.len() == 0{todos.data.push(Todo::new("Add Todos".to_string()).into())}
+	if !todos.is_sel_valid(){todos.selected = vec!(0);}
 	let mut size;
 	loop{
 		size = termsize::get().unwrap();
