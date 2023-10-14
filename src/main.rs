@@ -3,6 +3,7 @@ use getch::Getch;
 use once_cell::sync::Lazy;
 use termsize;
 
+#[derive(Clone, Copy)]
 pub enum Colour{
 	Default = 0,
 	BoldBright = 1,
@@ -96,9 +97,9 @@ impl Todo{
 		state: TodoState::Todo,
 		open: false,
 	}}
-	fn draw(&self, indent: usize, selected: &Todo, width: usize){
+	fn draw(&self, indent: usize, selected: &Todo, width: usize, default_colour:&[Colour], select_colour:&[Colour]){
 		IO::clear_line(ClearType::FromCur);
-		if std::ptr::eq(self, selected) {IO::set_colour(Colour::Negative);}
+		if std::ptr::eq(self, selected) {for c in select_colour{IO::set_colour((*c).clone());}}
 		IO::write(&" ".repeat(indent*2));
 		IO::write(if self.open {"▼"} else {"▶"});
 		IO::write(" [");
@@ -114,10 +115,10 @@ impl Todo{
 			IO::write("…");
 		}else{IO::write(self.name.as_str());}
 		IO::write("\n");
-		if std::ptr::eq(self, selected) {IO::set_colour(Colour::Default);}
-		if self.open{for child in &self.children{ child.draw(indent+1, selected, width); }}
+		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
+		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
 	}
-	fn draw_details(&self, start: (usize, usize), width: usize){
+	fn draw_details(&self, start: (usize, usize), width: usize, state: State){
 		let mut i = 0;
 		i+=write_str_with_width(&self.name, start, width);
 		IO::move_cur(start.0, start.1+i);
@@ -126,7 +127,7 @@ impl Todo{
 		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
 		IO::move_cur(start.0, start.1+i);
 		IO::write(&"=".repeat(width));
-	}	
+	}
 }
 
 #[derive(Debug)]
@@ -177,10 +178,52 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 		}))},Err(e) => { return Err(e); }}
 	}else{ return Ok(TermChar::Unknown(chr)); }
 }},Err(e) => { return Err(e); }}}
+enum State{
+	Tree,
+	Name,
+	Description,
+}
+impl State{fn next(&mut self){*self = match self{
+	State::Tree => State::Name,
+	State::Name => State::Description,
+	State::Description => State::Tree,
+}}}
+struct Settings{
+	active_focused: Colour,
+	active_focused_background: Colour,
+	active_focused_modifier: Colour,
 
+	active_blured: Colour,
+	active_blured_background: Colour,
+	active_blured_modifier: Colour,
+
+	focused: Colour,
+
+	blured: Colour,
+
+	background: Colour,
+	modifier: Colour,
+}
+impl Settings{fn new()->Self{Settings{
+	active_focused: Colour::ForegroundBlack,
+	active_focused_background: Colour::BrightBackgroundWhite,
+	active_focused_modifier: Colour::NoUnderline,
+	
+	active_blured: Colour::BrightForegroundBlack,
+	active_blured_background: Colour::BackgroundWhite,
+	active_blured_modifier: Colour::NoUnderline,
+	
+	focused: Colour::BrightForegroundWhite,
+	
+	blured: Colour::ForegroundWhite,
+	
+	background: Colour::BackgroundBlack,
+	modifier: Colour::NoUnderline,
+}}}
 struct Todos{
 	data: Vec<Todo>,
 	selected: Vec<usize>,
+	settings: Settings,
 }
 macro_rules! get_ptr{
 	($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)=>{{
@@ -214,6 +257,15 @@ macro_rules! get_mut_parent_arr{
 	($self: ident, $id: expr/*Vec<usize>*/)=>{get_mut_parent_arr!($self.data,$id)};
 	($self: ident)=>{get_mut_parent_arr!($self.data,$self.selected)};
 }
+macro_rules! get_def_colour{($settings: expr, $state: expr, $focused_state: pat) => {[
+	$settings.background,
+	$settings.modifier,
+	match $state{$focused_state => $settings.focused, _ => $settings.blured, },
+]};}
+macro_rules! get_focus_colour{($settings: expr, $state: expr, $focused_state: pat) => {match $state{
+	$focused_state => [$settings.active_focused, $settings.active_focused_background, $settings.active_focused_modifier],
+	_ => [$settings.active_blured, $settings.active_blured_background, $settings.active_blured_modifier],
+}};}
 impl Todos{
 	fn update_state(&mut self){
 		get_mut_ptr!(self).state = match get_ptr!(self).state{
@@ -222,11 +274,17 @@ impl Todos{
 			TodoState::Doing => TodoState::Done,
 		}
 	}
-	fn draw(&self, (width, height): (usize,usize)){
+	fn draw(&self, (width, height): (usize,usize), state: &State){
 		IO::move_cur(1,1);
 		let curr = get_ptr!(self);
-		for todo in &self.data{ todo.draw(0, curr, (width/2)-1); }
+		let mut def_colour = get_def_colour!(self.settings,state,State::Tree);
+		let mut focus_colour = get_focus_colour!(self.settings,state,State::Tree);
+		for c in def_colour{IO::set_colour(c);}
+		for todo in &self.data{ todo.draw(0, curr, (width/2)-1, &def_colour, &focus_colour); }
 		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
+		
+		def_colour = get_def_colour!(self.settings,state,State::Name);
+		for c in def_colour{IO::set_colour(c);}
 		draw_vertical_line(height, width/2, 1);
 		curr.draw_details(((width/2)+1,1), width/2);
 		IO::flush();
@@ -348,9 +406,10 @@ fn todo_loop(mut todos: Todos){
 	if todos.data.len() == 0{todos.data.push(Todo::new("Add Todos".to_string()).into())}
 	if !todos.is_sel_valid(){todos.selected = vec!(0);}
 	let mut size;
+	let mut state = State::Tree;
 	loop{
 		size = termsize::get().unwrap();
-		todos.draw((size.cols as usize, size.rows as usize));
+		todos.draw((size.cols as usize, size.rows as usize), &state);
 		if size.cols < 10{
 			eprintln!("Error. screen not wide enough.");
 			break;
@@ -358,20 +417,20 @@ fn todo_loop(mut todos: Todos){
 		match getch() { Ok(chr) => {match chr{
 			TermChar::Char(chr) => match chr{
 				'\x03'=>break, // this is ctrl-c
-				'\r' | ' '=>todos.update_state(),
-				'\t'=>todo!(),
+				'\r' | ' '=>if let State::Tree = state {todos.update_state()},
+				'\t'=>state.next(),
 				'+'=>todos.add_todo(),
 				'\x1b'=>break, // this is esc
 				_=>{},// do nothing
 			},
 			TermChar::ControlChar(chr) => match chr{
-				ControlChar::Up=>todos.select_prev(),
-				ControlChar::Down=>todos.select_next(),
-				ControlChar::Left=>todos.close_sel(),
-				ControlChar::Right=>todos.open_sel(),
-				ControlChar::CtrlDown=>todos.move_sel_down(),
-				ControlChar::CtrlUp=>todos.move_sel_up(),
-				ControlChar::Delete=>todos.remove_todo(),
+				ControlChar::Up=>if let State::Tree = state {todos.select_prev()},
+				ControlChar::Down=>if let State::Tree = state {todos.select_next()},
+				ControlChar::Left=>if let State::Tree = state {todos.close_sel()},
+				ControlChar::Right=>if let State::Tree = state {todos.open_sel()},
+				ControlChar::CtrlDown=>if let State::Tree = state {todos.move_sel_down()},
+				ControlChar::CtrlUp=>if let State::Tree = state {todos.move_sel_up()},
+				ControlChar::Delete=>if let State::Tree = state {todos.remove_todo()},
 				_=>{},// do nothing
 			},
 			_=>{}, // do nothing
@@ -392,4 +451,4 @@ fn main() {todo_loop(Todos{data:vec!(Todo{
 	description: String::new(),
 	state: TodoState::Doing,
 	open: true,
-},Todo::new("parent2".to_string()),), selected:vec!(0)});}
+},Todo::new("parent2".to_string()),), selected:vec!(0), settings:Settings::new(),});}
