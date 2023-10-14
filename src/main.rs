@@ -139,6 +139,8 @@ enum ControlChar{
 	End,
 	Down,
 	PgDown,
+	Insert,
+	Delete,
 	CtrlUp,
 	CtrlDown,
 	CtrlLeft,
@@ -165,6 +167,8 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 			79=>ControlChar::End,
 			80=>ControlChar::Down,
 			81=>ControlChar::PgDown,
+			82=>ControlChar::Insert,
+			83=>ControlChar::Delete,
 			141=>ControlChar::CtrlUp,
 			145=>ControlChar::CtrlDown,
 			115=>ControlChar::CtrlLeft,
@@ -308,6 +312,17 @@ impl Todos{
 		}
 		return true;
 	}
+	fn add_todo(&mut self){
+		self.selected = vec!(self.data.len());
+		self.data.push(Todo::new(String::new()));
+	}
+	fn remove_todo(&mut self){
+		let id = self.selected.last().unwrap();
+		get_mut_parent_arr!(self).remove(*id);
+		if *id > 0{ *self.selected.last_mut().unwrap()-=1; }
+		else if self.selected.len() > 1 {self.selected.pop();}
+		else if self.data.len() == 0 {self.add_todo();}
+	}
 }
 
 fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
@@ -345,6 +360,7 @@ fn todo_loop(mut todos: Todos){
 				'\x03'=>break, // this is ctrl-c
 				'\r' | ' '=>todos.update_state(),
 				'\t'=>todo!(),
+				'+'=>todos.add_todo(),
 				'\x1b'=>break, // this is esc
 				_=>{},// do nothing
 			},
@@ -355,6 +371,7 @@ fn todo_loop(mut todos: Todos){
 				ControlChar::Right=>todos.open_sel(),
 				ControlChar::CtrlDown=>todos.move_sel_down(),
 				ControlChar::CtrlUp=>todos.move_sel_up(),
+				ControlChar::Delete=>todos.remove_todo(),
 				_=>{},// do nothing
 			},
 			_=>{}, // do nothing
