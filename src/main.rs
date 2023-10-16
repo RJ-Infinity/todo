@@ -1,4 +1,4 @@
-use std::{io::Write, process::exit};
+use std::{io::Write, panic};
 use getch::Getch;
 use once_cell::sync::Lazy;
 use termsize;
@@ -66,6 +66,10 @@ impl IO{
 		Self::write("\x1b7");
 		Self::write("\x1B[?1049h");
 		Self::move_cur(1,1);
+		panic::set_hook(Box::new(|_| {
+			Self::restore_screen();
+			Self::flush();
+		}));
 	}
 	fn restore_screen(){
 		Self::write("\x1B[?1049l");
@@ -74,7 +78,19 @@ impl IO{
 	fn set_colour(c: Colour){ Self::write(&format!("\x1b[{}m",c as usize)); }
 	fn clear_display(c: ClearType){ Self::write(&format!("\x1b[{}J",c as usize)); }
 	fn clear_line(c: ClearType){ Self::write(&format!("\x1b[{}K",c as usize)); }
+	fn show_cur(){ Self::write("\x1b[?25h"); }
+	fn hide_cur(){ Self::write("\x1b[?25l"); }
 }
+
+macro_rules! get_def_colour{($settings: expr, $state: expr, $focused_state: pat) => {[
+	$settings.background,
+	$settings.modifier,
+	match $state{$focused_state => $settings.focused, _ => $settings.blured, },
+]};}
+macro_rules! get_focus_colour{($settings: expr, $state: expr, $focused_state: pat) => {match $state{
+	$focused_state => [$settings.active_focused, $settings.active_focused_background, $settings.active_focused_modifier],
+	_ => [$settings.active_blured, $settings.active_blured_background, $settings.active_blured_modifier],
+}};}
 
 enum TodoState{
 	Todo,
@@ -118,15 +134,28 @@ impl Todo{
 		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
 	}
-	fn draw_details(&self, start: (usize, usize), width: usize, state: State){
+	fn draw_details(&self, start: (usize, usize), width: usize, settings: &Settings, state: &State) -> ((usize,usize),(usize,usize)){
 		let mut i = 0;
+
+		let mut def_colour = get_def_colour!(settings,state,State::Name(_));
+		for c in def_colour{IO::set_colour(c);}
+
 		i+=write_str_with_width(&self.name, start, width);
+		let name =(start.0 + (self.name.len() % width), i-1);
 		IO::move_cur(start.0, start.1+i);
+		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
 		i+=1;
+		
+		def_colour = get_def_colour!(settings,state,State::Description(_));
+		for c in def_colour{IO::set_colour(c);}
+
 		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
+		let desc =(start.0 + (self.description.len() % width), i-1);
 		IO::move_cur(start.0, start.1+i);
+		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
+		return (name, desc);
 	}
 }
 
@@ -178,15 +207,16 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 		}))},Err(e) => { return Err(e); }}
 	}else{ return Ok(TermChar::Unknown(chr)); }
 }},Err(e) => { return Err(e); }}}
+#[derive(Debug)]
 enum State{
 	Tree,
-	Name,
-	Description,
+	Name(Option<(usize, usize)>),
+	Description(Option<(usize, usize)>),
 }
 impl State{fn next(&mut self){*self = match self{
-	State::Tree => State::Name,
-	State::Name => State::Description,
-	State::Description => State::Tree,
+	State::Tree => State::Name(None),
+	State::Name(_) => State::Description(None),
+	State::Description(_) => State::Tree,
 }}}
 struct Settings{
 	active_focused: Colour,
@@ -201,6 +231,8 @@ struct Settings{
 
 	blured: Colour,
 
+	ui_elements: Colour,
+
 	background: Colour,
 	modifier: Colour,
 }
@@ -214,8 +246,10 @@ impl Settings{fn new()->Self{Settings{
 	active_blured_modifier: Colour::NoUnderline,
 	
 	focused: Colour::BrightForegroundWhite,
-	
+
 	blured: Colour::ForegroundWhite,
+
+	ui_elements: Colour::ForegroundYellow,
 	
 	background: Colour::BackgroundBlack,
 	modifier: Colour::NoUnderline,
@@ -257,15 +291,6 @@ macro_rules! get_mut_parent_arr{
 	($self: ident, $id: expr/*Vec<usize>*/)=>{get_mut_parent_arr!($self.data,$id)};
 	($self: ident)=>{get_mut_parent_arr!($self.data,$self.selected)};
 }
-macro_rules! get_def_colour{($settings: expr, $state: expr, $focused_state: pat) => {[
-	$settings.background,
-	$settings.modifier,
-	match $state{$focused_state => $settings.focused, _ => $settings.blured, },
-]};}
-macro_rules! get_focus_colour{($settings: expr, $state: expr, $focused_state: pat) => {match $state{
-	$focused_state => [$settings.active_focused, $settings.active_focused_background, $settings.active_focused_modifier],
-	_ => [$settings.active_blured, $settings.active_blured_background, $settings.active_blured_modifier],
-}};}
 impl Todos{
 	fn update_state(&mut self){
 		get_mut_ptr!(self).state = match get_ptr!(self).state{
@@ -274,7 +299,7 @@ impl Todos{
 			TodoState::Doing => TodoState::Done,
 		}
 	}
-	fn draw(&self, (width, height): (usize,usize), state: &State){
+	fn draw(&self, (width, height): (usize,usize), state: &mut State){
 		IO::move_cur(1,1);
 		let curr = get_ptr!(self);
 		let mut def_colour = get_def_colour!(self.settings,state,State::Tree);
@@ -283,10 +308,23 @@ impl Todos{
 		for todo in &self.data{ todo.draw(0, curr, (width/2)-1, &def_colour, &focus_colour); }
 		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
 		
-		def_colour = get_def_colour!(self.settings,state,State::Name);
 		for c in def_colour{IO::set_colour(c);}
+		IO::set_colour(self.settings.ui_elements);
 		draw_vertical_line(height, width/2, 1);
-		curr.draw_details(((width/2)+1,1), width/2);
+		let positions = curr.draw_details(((width/2)+1,1), width/2, &self.settings, state);
+		match state{
+			State::Name(ref mut pos) => if pos.is_none(){*pos = Some(positions.0)},
+			State::Description(ref mut pos) => if pos.is_none(){*pos = Some(positions.1)},
+			_ => {} // do nothing
+		}
+		match state{
+			State::Tree => IO::hide_cur(),
+			State::Description(pos) | State::Name(pos) => {
+				IO::show_cur();
+				let pos = pos.unwrap();
+				IO::move_cur(pos.0, pos.1);
+			},
+		}
 		IO::flush();
 	}
 	fn select_prev(&mut self){if self.selected.last() == Some(&0) {
@@ -409,7 +447,7 @@ fn todo_loop(mut todos: Todos){
 	let mut state = State::Tree;
 	loop{
 		size = termsize::get().unwrap();
-		todos.draw((size.cols as usize, size.rows as usize), &state);
+		todos.draw((size.cols as usize, size.rows as usize), &mut state);
 		if size.cols < 10{
 			eprintln!("Error. screen not wide enough.");
 			break;
