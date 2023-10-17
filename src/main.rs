@@ -134,14 +134,14 @@ impl Todo{
 		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
 	}
-	fn draw_details(&self, start: (usize, usize), width: usize, settings: &Settings, state: &State) -> ((usize,usize),(usize,usize)){
+	fn draw_details(&self, start: (usize, usize), width: usize, settings: &Settings, state: &State) -> Option<(usize,usize)> {
 		let mut i = 0;
 
 		let mut def_colour = get_def_colour!(settings,state,State::Name(_));
 		for c in def_colour{IO::set_colour(c);}
 
 		i+=write_str_with_width(&self.name, start, width);
-		let name =(start.0 + (self.name.len() % width), i-1);
+		let name =(start.0 + (self.name.len() % width), i);
 		IO::move_cur(start.0, start.1+i);
 		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
@@ -151,11 +151,15 @@ impl Todo{
 		for c in def_colour{IO::set_colour(c);}
 
 		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
-		let desc =(start.0 + (self.description.len() % width), i-1);
+		let desc =(start.0 + (self.description.len() % width), i);
 		IO::move_cur(start.0, start.1+i);
 		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
-		return (name, desc);
+		return match state{
+			State::Tree => None,
+			State::Name(_) => Some(name),
+			State::Description(_) => Some(desc),
+		};
 	}
 }
 
@@ -210,12 +214,12 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 #[derive(Debug)]
 enum State{
 	Tree,
-	Name(Option<(usize, usize)>),
-	Description(Option<(usize, usize)>),
+	Name(usize),
+	Description(usize),
 }
 impl State{fn next(&mut self){*self = match self{
-	State::Tree => State::Name(None),
-	State::Name(_) => State::Description(None),
+	State::Tree => State::Name(0),
+	State::Name(_) => State::Description(0),
 	State::Description(_) => State::Tree,
 }}}
 struct Settings{
@@ -258,6 +262,7 @@ struct Todos{
 	data: Vec<Todo>,
 	selected: Vec<usize>,
 	settings: Settings,
+	state: State,
 }
 macro_rules! get_ptr{
 	($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)=>{{
@@ -291,19 +296,29 @@ macro_rules! get_mut_parent_arr{
 	($self: ident, $id: expr/*Vec<usize>*/)=>{get_mut_parent_arr!($self.data,$id)};
 	($self: ident)=>{get_mut_parent_arr!($self.data,$self.selected)};
 }
+macro_rules! get_text{($todos: ident) => {match $todos.state{
+	State::Name(_) => &get_ptr!($todos).name,
+	State::Description(_) => &get_ptr!($todos).description,
+	_=>panic!(),
+}}; }
+macro_rules! get_mut_text{($todos: ident) => {match $todos.state{
+	State::Name(_) => &mut get_mut_ptr!($todos).name,
+	State::Description(_) => &mut get_mut_ptr!($todos).description,
+	_=>panic!(),
+}}; }
 impl Todos{
-	fn update_state(&mut self){
+	fn update_state(&mut self){if let State::Tree = self.state {
 		get_mut_ptr!(self).state = match get_ptr!(self).state{
 			TodoState::Done => TodoState::Todo,
 			TodoState::Todo => TodoState::Doing,
 			TodoState::Doing => TodoState::Done,
 		}
-	}
-	fn draw(&self, (width, height): (usize,usize), state: &mut State){
+	}}
+	fn draw(&mut self, (width, height): (usize,usize)){
 		IO::move_cur(1,1);
 		let curr = get_ptr!(self);
-		let mut def_colour = get_def_colour!(self.settings,state,State::Tree);
-		let mut focus_colour = get_focus_colour!(self.settings,state,State::Tree);
+		let mut def_colour = get_def_colour!(self.settings,self.state,State::Tree);
+		let mut focus_colour = get_focus_colour!(self.settings,self.state,State::Tree);
 		for c in def_colour{IO::set_colour(c);}
 		for todo in &self.data{ todo.draw(0, curr, (width/2)-1, &def_colour, &focus_colour); }
 		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
@@ -311,23 +326,24 @@ impl Todos{
 		for c in def_colour{IO::set_colour(c);}
 		IO::set_colour(self.settings.ui_elements);
 		draw_vertical_line(height, width/2, 1);
-		let positions = curr.draw_details(((width/2)+1,1), width/2, &self.settings, state);
-		match state{
-			State::Name(ref mut pos) => if pos.is_none(){*pos = Some(positions.0)},
-			State::Description(ref mut pos) => if pos.is_none(){*pos = Some(positions.1)},
-			_ => {} // do nothing
-		}
-		match state{
+		let detail_width = width/2;
+		let detail_start = (width/2)+1;
+		let positions = curr.draw_details((detail_start,1), detail_width, &self.settings, &self.state);
+		match self.state{
 			State::Tree => IO::hide_cur(),
-			State::Description(pos) | State::Name(pos) => {
+			State::Description(mut i) | State::Name(mut i) => {
 				IO::show_cur();
-				let pos = pos.unwrap();
-				IO::move_cur(pos.0, pos.1);
+				let mut positions = positions.unwrap();
+				while positions.0 - i < detail_start{
+					i-=detail_width;
+					positions.1-=1;
+				}
+				IO::move_cur(positions.0 - i, positions.1);
 			},
 		}
 		IO::flush();
 	}
-	fn select_prev(&mut self){if self.selected.last() == Some(&0) {
+	fn select_prev(&mut self){if let State::Tree = self.state {if self.selected.last() == Some(&0) {
 		if self.selected.len() > 1 { self.selected.pop(); }
 	} else {
 		*self.selected.last_mut().unwrap() -= 1;
@@ -335,8 +351,8 @@ impl Todos{
 		if curr.open && curr.children.len() > 0{
 			self.selected.push(curr.children.len()-1);
 		}
-	}}
-	fn select_next(&mut self){
+	}}}
+	fn select_next(&mut self){if let State::Tree = self.state {
 		let curr = get_ptr!(self);
 		if curr.open && curr.children.len() > 0 { self.selected.push(0); } else {
 			let mut selected_tmp = &self.selected[..];
@@ -352,10 +368,10 @@ impl Todos{
 				*self.selected.last_mut().unwrap() += 1;
 			}
 		}
-	}
-	fn close_sel(&mut self){get_mut_ptr!(self).open = false;}
-	fn open_sel(&mut self){get_mut_ptr!(self).open = true;}
-	fn move_sel_down(&mut self){
+	}}
+	fn close_sel(&mut self){if let State::Tree = self.state {get_mut_ptr!(self).open = false;}}
+	fn open_sel(&mut self){if let State::Tree = self.state {get_mut_ptr!(self).open = true;}}
+	fn move_sel_down(&mut self){if let State::Tree = self.state {
 		get_mut_ptr!(self).open = false;
 		let index = *self.selected.last().unwrap();
 		let next_el = get_parent_arr!(self).get(index+1);
@@ -376,8 +392,8 @@ impl Todos{
 				*self.selected.last().unwrap(), item
 			);
 		}
-	}
-	fn move_sel_up(&mut self){
+	}}
+	fn move_sel_up(&mut self){if let State::Tree = self.state {
 		get_mut_ptr!(self).open = false;
 		if self.selected.len() > 1 && self.selected.last() == Some(&0){
 			self.selected.pop();
@@ -399,7 +415,7 @@ impl Todos{
 				*self.selected.last_mut().unwrap() -= 1;
 			}
 		}
-	}
+	}}
 	fn is_sel_valid(&self)->bool{
 		let mut curr = &self.data;
 		for i in &self.selected{
@@ -419,6 +435,28 @@ impl Todos{
 		else if self.selected.len() > 1 {self.selected.pop();}
 		else if self.data.len() == 0 {self.add_todo();}
 	}
+	fn try_update(&mut self, chr: char){
+		let len = get_text!(self).len();
+		if let State::Name(i)| State::Description(i) = self.state{
+			get_mut_text!(self).insert(len-i, chr);
+		}
+	}
+	fn try_backspace(&mut self){if let State::Name(i)| State::Description(i) = self.state{
+		let len = get_text!(self).len();
+		if i < len{ get_mut_text!(self).remove(len-i-1); }
+	}}
+	fn try_move_curs_left(&mut self){
+		let len = get_text!(self).len();
+		if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ if *i < len { *i+=1; } }
+	}
+	fn try_move_curs_right(&mut self){if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{
+		if *i > 0 { *i-=1; }
+	}}
+	fn try_move_curs_home(&mut self){
+		let len = get_text!(self).len();
+		if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ *i=len; }
+	}
+	fn try_move_curs_end(&mut self){if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ *i=0; }}
 }
 
 fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
@@ -444,10 +482,9 @@ fn todo_loop(mut todos: Todos){
 	if todos.data.len() == 0{todos.data.push(Todo::new("Add Todos".to_string()).into())}
 	if !todos.is_sel_valid(){todos.selected = vec!(0);}
 	let mut size;
-	let mut state = State::Tree;
 	loop{
 		size = termsize::get().unwrap();
-		todos.draw((size.cols as usize, size.rows as usize), &mut state);
+		todos.draw((size.cols as usize, size.rows as usize));
 		if size.cols < 10{
 			eprintln!("Error. screen not wide enough.");
 			break;
@@ -455,20 +492,54 @@ fn todo_loop(mut todos: Todos){
 		match getch() { Ok(chr) => {match chr{
 			TermChar::Char(chr) => match chr{
 				'\x03'=>break, // this is ctrl-c
-				'\r' | ' '=>if let State::Tree = state {todos.update_state()},
-				'\t'=>state.next(),
-				'+'=>todos.add_todo(),
+				'\r' | ' '=>match todos.state {
+					State::Tree => todos.update_state(),
+					State::Name(_) | State::Description(_) => todos.try_update(chr),
+				},
+				'\t'=>todos.state.next(),
+				'+'=>match todos.state {
+					State::Tree => todos.add_todo(),
+					State::Name(_) | State::Description(_) => todos.try_update(chr),
+				},
 				'\x1b'=>break, // this is esc
-				_=>{},// do nothing
+				'\u{7f}'=>{},// ctrl backspace
+				'\u{8}'=>match todos.state {
+					State::Name(_) | State::Description(_) => todos.try_backspace(),
+					_=>{}//do nothing
+				},
+				_=>match todos.state {
+					State::Name(_) | State::Description(_) => todos.try_update(chr),
+					_=>{}//do nothing
+				},
 			},
 			TermChar::ControlChar(chr) => match chr{
-				ControlChar::Up=>if let State::Tree = state {todos.select_prev()},
-				ControlChar::Down=>if let State::Tree = state {todos.select_next()},
-				ControlChar::Left=>if let State::Tree = state {todos.close_sel()},
-				ControlChar::Right=>if let State::Tree = state {todos.open_sel()},
-				ControlChar::CtrlDown=>if let State::Tree = state {todos.move_sel_down()},
-				ControlChar::CtrlUp=>if let State::Tree = state {todos.move_sel_up()},
-				ControlChar::Delete=>if let State::Tree = state {todos.remove_todo()},
+				ControlChar::Up=>todos.select_prev(),
+				ControlChar::Down=>todos.select_next(),
+				ControlChar::Left=>match todos.state {
+					State::Tree => todos.close_sel(),
+					State::Name(_) | State::Description(_) => todos.try_move_curs_left(),
+				},
+				ControlChar::Right=>match todos.state {
+					State::Tree => todos.open_sel(),
+					State::Name(_) | State::Description(_) => todos.try_move_curs_right(),
+				},
+				ControlChar::CtrlDown=>todos.move_sel_down(),
+				ControlChar::CtrlUp=>todos.move_sel_up(),
+				ControlChar::Delete=>match todos.state {
+					State::Tree => todos.remove_todo(),
+					State::Description(ref mut i) | State::Name(ref mut i) => {if *i > 0 {
+						*i-=1;
+						todos.try_backspace();
+					}},
+				},
+				ControlChar::Home=>match todos.state {
+					State::Description(_) | State::Name(_) => todos.try_move_curs_home(),
+					_=>{}
+				},
+				ControlChar::End=>match todos.state {
+					State::Description(_) | State::Name(_) => todos.try_move_curs_end(),
+					_=>{}
+				},
 				_=>{},// do nothing
 			},
 			_=>{}, // do nothing
@@ -480,13 +551,18 @@ fn todo_loop(mut todos: Todos){
 	IO::restore_screen();
 }
 
-fn main() {todo_loop(Todos{data:vec!(Todo{
-	children: vec!(
-		Todo::new("child1".to_string()),
-		Todo::new("child2".to_string()),
-	),
-	name: "parent".to_string(),
-	description: String::new(),
-	state: TodoState::Doing,
-	open: true,
-},Todo::new("parent2".to_string()),), selected:vec!(0), settings:Settings::new(),});}
+fn main() {todo_loop(Todos{
+	data:vec!(Todo{
+		children: vec!(
+			Todo::new("child1".to_string()),
+			Todo::new("child2".to_string()),
+		),
+		name: "parent".to_string(),
+		description: "this is the description".to_string(),
+		state: TodoState::Doing,
+		open: true,
+	},Todo::new("parent2".to_string()),),
+	selected:vec!(0),
+	settings:Settings::new(),
+	state: State::Tree,
+});}
