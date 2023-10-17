@@ -136,12 +136,15 @@ impl Todo{
 	}
 	fn draw_details(&self, start: (usize, usize), width: usize, settings: &Settings, state: &State) -> Option<(usize,usize)> {
 		let mut i = 0;
+		let mut rv = None;
 
 		let mut def_colour = get_def_colour!(settings,state,State::Name(_));
 		for c in def_colour{IO::set_colour(c);}
 
 		i+=write_str_with_width(&self.name, start, width);
-		let name =(start.0 + (self.name.len() % width), i);
+		if let State::Name(j) = state{
+			rv = Some(get_curs_pos(&self.name, start, width, *j));
+		}
 		IO::move_cur(start.0, start.1+i);
 		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
@@ -151,15 +154,13 @@ impl Todo{
 		for c in def_colour{IO::set_colour(c);}
 
 		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
-		let desc =(start.0 + (self.description.len() % width), i);
+		if let State::Description(j) = state{
+			rv = Some(get_curs_pos(&self.description, (start.0, start.1+i), width, *j));
+		}
 		IO::move_cur(start.0, start.1+i);
 		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
-		return match state{
-			State::Tree => None,
-			State::Name(_) => Some(name),
-			State::Description(_) => Some(desc),
-		};
+		return rv;
 	}
 }
 
@@ -317,8 +318,8 @@ impl Todos{
 	fn draw(&mut self, (width, height): (usize,usize)){
 		IO::move_cur(1,1);
 		let curr = get_ptr!(self);
-		let mut def_colour = get_def_colour!(self.settings,self.state,State::Tree);
-		let mut focus_colour = get_focus_colour!(self.settings,self.state,State::Tree);
+		let def_colour = get_def_colour!(self.settings,self.state,State::Tree);
+		let focus_colour = get_focus_colour!(self.settings,self.state,State::Tree);
 		for c in def_colour{IO::set_colour(c);}
 		for todo in &self.data{ todo.draw(0, curr, (width/2)-1, &def_colour, &focus_colour); }
 		IO::clear_display(ClearType::FromCur); // we dont clear the whole screen before redrawing as that causes flicker instead it is done one line at a time
@@ -333,12 +334,8 @@ impl Todos{
 			State::Tree => IO::hide_cur(),
 			State::Description(mut i) | State::Name(mut i) => {
 				IO::show_cur();
-				let mut positions = positions.unwrap();
-				while positions.0 - i < detail_start{
-					i-=detail_width;
-					positions.1-=1;
-				}
-				IO::move_cur(positions.0 - i, positions.1);
+				let positions = positions.unwrap();
+				IO::move_cur(positions.0, positions.1);
 			},
 		}
 		IO::flush();
@@ -465,16 +462,38 @@ fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+
 }}
 fn write_str_with_width(text: &String, start: (usize, usize), width: usize)->usize{
 	let mut i = 0;
-	let mut tmp_text = &text[..];
-	while tmp_text.len() > width{
+	for text in text.split('\r'){
+		let mut tmp_text = &text[..];
+		while tmp_text.len() > width{
+			IO::move_cur(start.0, start.1+i);
+			IO::write(&tmp_text[..width]);
+			tmp_text = &tmp_text[width..];
+			i+=1;
+		}
 		IO::move_cur(start.0, start.1+i);
-		IO::write(&tmp_text[..width]);
-		tmp_text = &tmp_text[width..];
+		IO::write(&tmp_text);
 		i+=1;
 	}
-	IO::move_cur(start.0, start.1+i);
-	IO::write(&tmp_text);
-	return i+1;
+	return i;
+}
+fn get_curs_pos(text: &String, start: (usize, usize), width: usize, pos: usize) -> (usize, usize){
+	let mut i = 0;
+	let text = &text[..text.len()-pos];
+	let mut curr = start;
+	for text in text.split('\r'){
+		let mut text_len = text.len();
+		while text_len > width{
+			text_len -= width;
+			i+=1;
+		}
+		curr = (start.0, start.1+i);
+		curr.0 += text_len;
+		if text_len == width{
+			curr = (start.0, start.1+i+1);
+		}
+		i+=1;
+	}
+	return curr;
 }
 
 fn todo_loop(mut todos: Todos){
