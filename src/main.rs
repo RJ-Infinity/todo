@@ -153,10 +153,10 @@ impl Todo{
 		def_colour = get_def_colour!(settings,state,State::Description(_));
 		for c in def_colour{IO::set_colour(c);}
 
-		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
 		if let State::Description(j) = state{
 			rv = Some(get_curs_pos(&self.description, (start.0, start.1+i), width, *j));
 		}
+		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
 		IO::move_cur(start.0, start.1+i);
 		IO::set_colour(settings.ui_elements);
 		IO::write(&"=".repeat(width));
@@ -332,7 +332,7 @@ impl Todos{
 		let positions = curr.draw_details((detail_start,1), detail_width, &self.settings, &self.state);
 		match self.state{
 			State::Tree => IO::hide_cur(),
-			State::Description(mut i) | State::Name(mut i) => {
+			State::Description(_) | State::Name(_) => {
 				IO::show_cur();
 				let positions = positions.unwrap();
 				IO::move_cur(positions.0, positions.1);
@@ -442,6 +442,23 @@ impl Todos{
 		let len = get_text!(self).len();
 		if i < len{ get_mut_text!(self).remove(len-i-1); }
 	}}
+	fn try_backspace_word(&mut self){
+		let mut j = 0;
+		let len =  get_text!(self).len();
+		if let State::Name(i)| State::Description(i) = self.state{
+			let i = len-i;
+			if get_text!(self).chars().nth(i-1) == Some('\r'){
+				self.try_backspace();
+				return;
+			}
+			while i>j && get_text!(self).chars().nth(i-j-1) == Some(' '){ j+=1; }
+			while {if i>j{
+				let chr = get_text!(self).chars().nth(i-j-1);
+				chr.is_some() && chr != Some(' ') && chr != Some('\r')
+			}else{false}}{ j+=1; }
+		}
+		for _ in 0..j { self.try_backspace(); }
+	}
 	fn try_move_curs_left(&mut self){
 		let len = get_text!(self).len();
 		if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ if *i < len { *i+=1; } }
@@ -521,7 +538,7 @@ fn todo_loop(mut todos: Todos){
 					State::Name(_) | State::Description(_) => todos.try_update(chr),
 				},
 				'\x1b'=>break, // this is esc
-				'\u{7f}'=>{},// ctrl backspace
+				'\u{7f}'=>todos.try_backspace_word(),// ctrl backspace
 				'\u{8}'=>match todos.state {
 					State::Name(_) | State::Description(_) => todos.try_backspace(),
 					_=>{}//do nothing
