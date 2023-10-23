@@ -127,9 +127,9 @@ impl Todo{
 		IO::write("] ");
 		let loc = 6 + indent*2;
 		if self.name.len() > width - loc{
-			IO::write(&self.name[..(width - loc - 1)]);
+			IO::write(&self.name.replace('\r', " ")[..(width - loc - 1)].replace('\u{06}', "£"));
 			IO::write("…");
-		}else{IO::write(self.name.as_str());}
+		}else{IO::write(self.name.replace('\r', " ").replace('\u{06}', "£").as_str());}
 		IO::write("\n");
 		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
@@ -180,6 +180,7 @@ enum ControlChar{
 	CtrlDown,
 	CtrlLeft,
 	CtrlRight,
+	CtrlDelete,
 	Unknown(u8),
 }
 #[derive(Debug)]
@@ -208,6 +209,7 @@ fn getch() -> Result<TermChar, std::io::Error>{match GETCH.getch() {Ok(chr) => {
 			145=>ControlChar::CtrlDown,
 			115=>ControlChar::CtrlLeft,
 			116=>ControlChar::CtrlRight,
+			147=>ControlChar::CtrlDelete,
 			chr=>ControlChar::Unknown(chr),
 		}))},Err(e) => { return Err(e); }}
 	}else{ return Ok(TermChar::Unknown(chr)); }
@@ -443,9 +445,10 @@ impl Todos{
 		if i < len{ get_mut_text!(self).remove(len-i-1); }
 	}}
 	fn try_backspace_word(&mut self){
+		if let State::Name(_)| State::Description(_) = self.state{}else{return;}
 		let mut j = 0;
 		let len =  get_text!(self).len();
-		if let State::Name(i)| State::Description(i) = self.state{
+		if len > 0 {if let State::Name(i)| State::Description(i) = self.state{
 			let i = len-i;
 			if get_text!(self).chars().nth(i-1) == Some('\r'){
 				self.try_backspace();
@@ -456,7 +459,7 @@ impl Todos{
 				let chr = get_text!(self).chars().nth(i-j-1);
 				chr.is_some() && chr != Some(' ') && chr != Some('\r')
 			}else{false}}{ j+=1; }
-		}
+		}}
 		for _ in 0..j { self.try_backspace(); }
 	}
 	fn try_move_curs_left(&mut self){
@@ -483,12 +486,12 @@ fn write_str_with_width(text: &String, start: (usize, usize), width: usize)->usi
 		let mut tmp_text = &text[..];
 		while tmp_text.len() > width{
 			IO::move_cur(start.0, start.1+i);
-			IO::write(&tmp_text[..width]);
+			IO::write(&(tmp_text[..width]).replace('\u{06}', "£"));
 			tmp_text = &tmp_text[width..];
 			i+=1;
 		}
 		IO::move_cur(start.0, start.1+i);
-		IO::write(&tmp_text);
+		IO::write(&tmp_text.replace('\u{06}', "£"));
 		i+=1;
 	}
 	return i;
@@ -543,8 +546,9 @@ fn todo_loop(mut todos: Todos){
 					State::Name(_) | State::Description(_) => todos.try_backspace(),
 					_=>{}//do nothing
 				},
+				'\u{9c}'=>todos.try_update('\u{06}'), // this handles '£'
 				_=>match todos.state {
-					State::Name(_) | State::Description(_) => todos.try_update(chr),
+					State::Name(_) | State::Description(_) => if chr >= ' ' && chr <= 126 as char {todos.try_update(chr)},
 					_=>{}//do nothing
 				},
 			},
