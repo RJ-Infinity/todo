@@ -385,7 +385,7 @@ impl Todos{
 	fn close_sel(&mut self){IF_NOT_TYPING!(self,{get_mut_ptr!(self).open = false;});}
 	fn open_sel(&mut self){IF_NOT_TYPING!(self,{get_mut_ptr!(self).open = true;});}
 	fn move_sel_down(&mut self){IF_NOT_TYPING!(self,{
-		get_mut_ptr!(self).open = false;
+		// get_mut_ptr!(self).open = false;
 		let index = *self.selected.last().unwrap();
 		let next_el = get_parent_arr!(self).get(index+1);
 		if next_el.is_some() {
@@ -407,7 +407,7 @@ impl Todos{
 		}
 	});}
 	fn move_sel_up(&mut self){IF_NOT_TYPING!(self,{
-		get_mut_ptr!(self).open = false;
+		// get_mut_ptr!(self).open = false;
 		if self.selected.len() > 1 && self.selected.last() == Some(&0){
 			self.selected.pop();
 			let item = get_mut_ptr!(self).children.remove(0);
@@ -455,23 +455,25 @@ impl Todos{
 		});
 	});}
 	fn try_backspace(&mut self){IF_TYPING_I!(self, i, {
-		let len = get_text!(self).len();
-		if i < len{ get_mut_text!(self).remove(len-i-1); }
+		let text = get_mut_text!(self);
+		let len = text.len()
+		if i < len{ text.remove(len-i-1); }
 	});}
 	fn try_backspace_word(&mut self){IF_TYPING!(self,{
 		let mut j = 0;
-		let len =  get_text!(self).len();
+		let text = get_text!(self);
+		let len =  text.len();
 		if len > 0 {IF_TYPING_I!(self, i, {
 			let i = len-i;
-			if get_text!(self).chars().nth(i-1) == Some('\r'){
+			if text.chars().nth(i-1) == Some('\r'){
 				self.try_backspace();
 				return;
 			}
-			while i>j && get_text!(self).chars().nth(i-j-1) == Some(' '){ j+=1; }
-			while {if i>j{
-				let chr = get_text!(self).chars().nth(i-j-1);
+			while i>j && text.chars().nth(i-j-1) == Some(' '){ j+=1; }
+			while i>j && {
+				let chr = text.chars().nth(i-j-1);
 				chr.is_some() && chr != Some(' ') && chr != Some('\r')
-			}else{false}}{ j+=1; }
+			}{ j+=1; }
 		});}
 		for _ in 0..j { self.try_backspace(); }
 	});}
