@@ -309,14 +309,26 @@ macro_rules! get_mut_text{($todos: ident) => {match $todos.state{
 	State::Description(_) => &mut get_mut_ptr!($todos).description,
 	_=>panic!(),
 }}; }
+macro_rules! IF_TYPING{($todos: ident, $code: block) => {
+	if let State::Name(_) | State::Description(_) = $todos.state {} else{return;}
+	$code
+}; }
+macro_rules! IF_NOT_TYPING{($todos: ident, $code: block) => {
+	if let State::Tree = $todos.state {} else{return;}
+	$code
+}; }
+macro_rules! IF_TYPING_I{($todos: ident, $i: pat, $code: block) => {
+	if let State::Name($i)| State::Description($i) = $todos.state $code
+}; }
+
 impl Todos{
-	fn update_state(&mut self){if let State::Tree = self.state {
+	fn update_state(&mut self){IF_NOT_TYPING!(self, {
 		get_mut_ptr!(self).state = match get_ptr!(self).state{
 			TodoState::Done => TodoState::Todo,
 			TodoState::Todo => TodoState::Doing,
 			TodoState::Doing => TodoState::Done,
 		}
-	}}
+	});}
 	fn draw(&mut self, (width, height): (usize,usize)){
 		IO::move_cur(1,1);
 		let curr = get_ptr!(self);
@@ -342,16 +354,18 @@ impl Todos{
 		}
 		IO::flush();
 	}
-	fn select_prev(&mut self){if let State::Tree = self.state {if self.selected.last() == Some(&0) {
-		if self.selected.len() > 1 { self.selected.pop(); }
-	} else {
-		*self.selected.last_mut().unwrap() -= 1;
-		let curr = get_ptr!(self);
-		if curr.open && curr.children.len() > 0{
-			self.selected.push(curr.children.len()-1);
+	fn select_prev(&mut self){IF_NOT_TYPING!(self, {
+		if self.selected.last() == Some(&0) {
+			if self.selected.len() > 1 { self.selected.pop(); }
+		} else {
+			*self.selected.last_mut().unwrap() -= 1;
+			let curr = get_ptr!(self);
+			if curr.open && curr.children.len() > 0{
+				self.selected.push(curr.children.len()-1);
+			}
 		}
-	}}}
-	fn select_next(&mut self){if let State::Tree = self.state {
+	});}
+	fn select_next(&mut self){IF_NOT_TYPING!(self,{
 		let curr = get_ptr!(self);
 		if curr.open && curr.children.len() > 0 { self.selected.push(0); } else {
 			let mut selected_tmp = &self.selected[..];
@@ -367,10 +381,10 @@ impl Todos{
 				*self.selected.last_mut().unwrap() += 1;
 			}
 		}
-	}}
-	fn close_sel(&mut self){if let State::Tree = self.state {get_mut_ptr!(self).open = false;}}
-	fn open_sel(&mut self){if let State::Tree = self.state {get_mut_ptr!(self).open = true;}}
-	fn move_sel_down(&mut self){if let State::Tree = self.state {
+	});}
+	fn close_sel(&mut self){IF_NOT_TYPING!(self,{get_mut_ptr!(self).open = false;});}
+	fn open_sel(&mut self){IF_NOT_TYPING!(self,{get_mut_ptr!(self).open = true;});}
+	fn move_sel_down(&mut self){IF_NOT_TYPING!(self,{
 		get_mut_ptr!(self).open = false;
 		let index = *self.selected.last().unwrap();
 		let next_el = get_parent_arr!(self).get(index+1);
@@ -391,8 +405,8 @@ impl Todos{
 				*self.selected.last().unwrap(), item
 			);
 		}
-	}}
-	fn move_sel_up(&mut self){if let State::Tree = self.state {
+	});}
+	fn move_sel_up(&mut self){IF_NOT_TYPING!(self,{
 		get_mut_ptr!(self).open = false;
 		if self.selected.len() > 1 && self.selected.last() == Some(&0){
 			self.selected.pop();
@@ -414,7 +428,7 @@ impl Todos{
 				*self.selected.last_mut().unwrap() -= 1;
 			}
 		}
-	}}
+	});}
 	fn is_sel_valid(&self)->bool{
 		let mut curr = &self.data;
 		for i in &self.selected{
@@ -434,21 +448,20 @@ impl Todos{
 		else if self.selected.len() > 1 {self.selected.pop();}
 		else if self.data.len() == 0 {self.add_todo();}
 	}
-	fn try_update(&mut self, chr: char){
+	fn try_update(&mut self, chr: char){IF_TYPING!(self,{
 		let len = get_text!(self).len();
-		if let State::Name(i)| State::Description(i) = self.state{
+		IF_TYPING_I!(self, i, {
 			get_mut_text!(self).insert(len-i, chr);
-		}
-	}
-	fn try_backspace(&mut self){if let State::Name(i)| State::Description(i) = self.state{
+		});
+	});}
+	fn try_backspace(&mut self){IF_TYPING_I!(self, i, {
 		let len = get_text!(self).len();
 		if i < len{ get_mut_text!(self).remove(len-i-1); }
-	}}
-	fn try_backspace_word(&mut self){
-		if let State::Name(_)| State::Description(_) = self.state{}else{return;}
+	});}
+	fn try_backspace_word(&mut self){IF_TYPING!(self,{
 		let mut j = 0;
 		let len =  get_text!(self).len();
-		if len > 0 {if let State::Name(i)| State::Description(i) = self.state{
+		if len > 0 {IF_TYPING_I!(self, i, {
 			let i = len-i;
 			if get_text!(self).chars().nth(i-1) == Some('\r'){
 				self.try_backspace();
@@ -459,21 +472,21 @@ impl Todos{
 				let chr = get_text!(self).chars().nth(i-j-1);
 				chr.is_some() && chr != Some(' ') && chr != Some('\r')
 			}else{false}}{ j+=1; }
-		}}
+		});}
 		for _ in 0..j { self.try_backspace(); }
-	}
-	fn try_move_curs_left(&mut self){
+	});}
+	fn try_move_curs_left(&mut self){IF_TYPING!(self,{
 		let len = get_text!(self).len();
-		if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ if *i < len { *i+=1; } }
-	}
-	fn try_move_curs_right(&mut self){if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{
+		IF_TYPING_I!(self, ref mut i, { if *i < len { *i+=1; } });
+	});}
+	fn try_move_curs_right(&mut self){IF_TYPING_I!(self, ref mut i, {
 		if *i > 0 { *i-=1; }
-	}}
-	fn try_move_curs_home(&mut self){
+	});}
+	fn try_move_curs_home(&mut self){IF_TYPING!(self,{
 		let len = get_text!(self).len();
-		if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ *i=len; }
-	}
-	fn try_move_curs_end(&mut self){if let State::Name(ref mut i) | State::Description(ref mut i) = self.state{ *i=0; }}
+		IF_TYPING_I!(self, ref mut i, { *i=len; });
+	});}
+	fn try_move_curs_end(&mut self){IF_TYPING_I!(self, ref mut i, { *i=0; });}
 }
 
 fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
@@ -542,15 +555,9 @@ fn todo_loop(mut todos: Todos){
 				},
 				'\x1b'=>break, // this is esc
 				'\u{7f}'=>todos.try_backspace_word(),// ctrl backspace
-				'\u{8}'=>match todos.state {
-					State::Name(_) | State::Description(_) => todos.try_backspace(),
-					_=>{}//do nothing
-				},
+				'\u{8}'=>todos.try_backspace(),
 				'\u{9c}'=>todos.try_update('\u{06}'), // this handles '£'
-				_=>match todos.state {
-					State::Name(_) | State::Description(_) => if chr >= ' ' && chr <= 126 as char {todos.try_update(chr)},
-					_=>{}//do nothing
-				},
+				chr=>if chr >= ' ' && chr <= 126 as char {todos.try_update(chr)},
 			},
 			TermChar::ControlChar(chr) => match chr{
 				ControlChar::Up=>todos.select_prev(),
@@ -572,14 +579,8 @@ fn todo_loop(mut todos: Todos){
 						todos.try_backspace();
 					}},
 				},
-				ControlChar::Home=>match todos.state {
-					State::Description(_) | State::Name(_) => todos.try_move_curs_home(),
-					_=>{}
-				},
-				ControlChar::End=>match todos.state {
-					State::Description(_) | State::Name(_) => todos.try_move_curs_end(),
-					_=>{}
-				},
+				ControlChar::Home=>todos.try_move_curs_home(),
+				ControlChar::End=>todos.try_move_curs_end(),
 				_=>{},// do nothing
 			},
 			_=>{}, // do nothing
