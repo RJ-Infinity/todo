@@ -1,4 +1,4 @@
-use std::{io::Write, panic};
+use std::{io::Write, panic, cell::RefCell};
 use getch::Getch;
 use once_cell::sync::Lazy;
 use termsize;
@@ -75,7 +75,8 @@ impl IO{
 		Self::write("\x1B[?1049l");
 		Self::write("\x1b8");
 	}
-	fn set_colour(c: Colour){ Self::write(&format!("\x1b[{}m",c as usize)); }
+	fn get_colour(c: Colour)->String{ format!("\x1b[{}m",c as usize) }
+	fn set_colour(c: Colour){ Self::write(&Self::get_colour(c)); }
 	fn clear_display(c: ClearType){ Self::write(&format!("\x1b[{}J",c as usize)); }
 	fn clear_line(c: ClearType){ Self::write(&format!("\x1b[{}K",c as usize)); }
 	fn show_cur(){ Self::write("\x1b[?25h"); }
@@ -99,11 +100,11 @@ enum TodoState{
 }
 
 struct Todo{
-	children: Vec<Todo>,
-	name: String,
-	description: String,
-	state: TodoState,
-	open: bool,
+	pub children: Vec<Todo>,
+	pub name: String,
+	pub description: String,
+	pub state: TodoState,
+	pub open: bool,
 }
 impl Todo{
 	fn new(name:String)->Self{Todo {
@@ -134,32 +135,60 @@ impl Todo{
 		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
 	}
-	fn draw_details(&self, start: (usize, usize), width: usize, settings: &Settings, state: &State) -> Option<(usize,usize)> {
-		let mut i = 0;
+	fn draw_details(
+		&self,
+		start: (usize, usize),
+		width: usize,
+		height: usize,
+		settings: &Settings,
+		state: &State,
+		scroll_offset: &mut usize,
+	) -> Option<(usize,usize)> {
+		let width = width - 1;
+
+		let i = RefCell::new(0);
+
+		let content_break = format!("{}{}",IO::get_colour(settings.ui_elements),"=".repeat(width));
+
+		let mut writeln: Box<dyn FnMut(&str)> = Box::new(|line|{
+			if *i.borrow() >= *scroll_offset && *i.borrow() - *scroll_offset < height{
+				IO::move_cur(start.0, start.1+*i.borrow() - *scroll_offset);
+				IO::write(line);
+			}
+			// log(&format!("got to line {}, height is {}\n",*i.borrow(),height));
+			i.replace_with(|i|{*i+1});
+		});
+
 		let mut rv = None;
 
 		let mut def_colour = get_def_colour!(settings,state,State::Name(_));
 		for c in def_colour{IO::set_colour(c);}
 
-		i+=write_str_with_width(&self.name, start, width);
+		write_str_with_width(&self.name, width, &mut writeln);
 		if let State::Name(j) = state{
 			rv = Some(get_curs_pos(&self.name, start, width, *j));
 		}
-		IO::move_cur(start.0, start.1+i);
-		IO::set_colour(settings.ui_elements);
-		IO::write(&"=".repeat(width));
-		i+=1;
+		writeln(&content_break);
 		
 		def_colour = get_def_colour!(settings,state,State::Description(_));
 		for c in def_colour{IO::set_colour(c);}
 
 		if let State::Description(j) = state{
-			rv = Some(get_curs_pos(&self.description, (start.0, start.1+i), width, *j));
+			rv = Some(get_curs_pos(&self.description, (start.0, start.1+*i.borrow()), width, *j));
 		}
-		i+=write_str_with_width(&self.description, (start.0, start.1+i), width);
-		IO::move_cur(start.0, start.1+i);
+		write_str_with_width(&self.description, width, &mut writeln);
+		writeln(&content_break);
+
 		IO::set_colour(settings.ui_elements);
-		IO::write(&"=".repeat(width));
+		let content_height = *i.borrow();
+		let mut scroll_top = 0;
+		let mut scroll_height = height;
+		if content_height > height{ // i.e. no div by 0
+			scroll_height = ((height as f32 / content_height as f32) * height as f32) as usize;
+			scroll_top = ((*scroll_offset as f32 / (content_height - height) as f32) * (height - scroll_height) as f32) as usize;
+			draw_vertical_line(height, start.0+width, 1, '║');
+		}
+		draw_vertical_line(scroll_height, start.0+width, scroll_top+1, '█');
 		return rv;
 	}
 }
@@ -266,6 +295,7 @@ struct Todos{
 	selected: Vec<usize>,
 	settings: Settings,
 	state: State,
+	scroll_ofset: usize,
 }
 macro_rules! get_ptr{
 	($todos: expr/*Vec<Todo>*/, $id: expr/*Vec<usize>*/)=>{{
@@ -340,10 +370,10 @@ impl Todos{
 		
 		for c in def_colour{IO::set_colour(c);}
 		IO::set_colour(self.settings.ui_elements);
-		draw_vertical_line(height, width/2, 1);
+		draw_vertical_line(height, width/2, 1, '│');
 		let detail_width = width/2;
 		let detail_start = (width/2)+1;
-		let positions = curr.draw_details((detail_start,1), detail_width, &self.settings, &self.state);
+		let positions = curr.draw_details((detail_start,1), detail_width, height, &self.settings, &self.state, &mut self.scroll_ofset);
 		match self.state{
 			State::Tree => IO::hide_cur(),
 			State::Description(_) | State::Name(_) => {
@@ -456,7 +486,7 @@ impl Todos{
 	});}
 	fn try_backspace(&mut self){IF_TYPING_I!(self, i, {
 		let text = get_mut_text!(self);
-		let len = text.len()
+		let len = text.len();
 		if i < len{ text.remove(len-i-1); }
 	});}
 	fn try_backspace_word(&mut self){IF_TYPING!(self,{
@@ -491,25 +521,20 @@ impl Todos{
 	fn try_move_curs_end(&mut self){IF_TYPING_I!(self, ref mut i, { *i=0; });}
 }
 
-fn draw_vertical_line(height: usize, col: usize, row: usize){ for i in row..row+height{
+fn draw_vertical_line(height: usize, col: usize, row: usize, chr: char){ for i in row..row+height{
 	IO::move_cur(col, i);
-	IO::write("|");
+	IO::write(&chr.to_string());
 }}
-fn write_str_with_width(text: &String, start: (usize, usize), width: usize)->usize{
-	let mut i = 0;
+fn write_str_with_width<F>(text: &String, width: usize, writeln: &mut F) where F: FnMut(&str){
+	// TODO: rewrite to handle multibyte chars
 	for text in text.split('\r'){
 		let mut tmp_text = &text[..];
 		while tmp_text.len() > width{
-			IO::move_cur(start.0, start.1+i);
-			IO::write(&(tmp_text[..width]).replace('\u{06}', "£"));
+			writeln(&(tmp_text[..width]).replace('\u{06}', "£"));
 			tmp_text = &tmp_text[width..];
-			i+=1;
 		}
-		IO::move_cur(start.0, start.1+i);
-		IO::write(&tmp_text.replace('\u{06}', "£"));
-		i+=1;
+		writeln(&tmp_text.replace('\u{06}', "£"));
 	}
-	return i;
 }
 fn get_curs_pos(text: &String, start: (usize, usize), width: usize, pos: usize) -> (usize, usize){
 	let mut i = 0;
@@ -562,8 +587,14 @@ fn todo_loop(mut todos: Todos){
 				chr=>if chr >= ' ' && chr <= 126 as char {todos.try_update(chr)},
 			},
 			TermChar::ControlChar(chr) => match chr{
-				ControlChar::Up=>todos.select_prev(),
-				ControlChar::Down=>todos.select_next(),
+				ControlChar::Up=>match todos.state {
+					State::Tree => todos.select_prev(),
+					State::Name(_) | State::Description(_) => if todos.scroll_ofset > 0 { todos.scroll_ofset-=1 },
+				},
+				ControlChar::Down=>match todos.state {
+					State::Tree => todos.select_next(),
+					State::Name(_) | State::Description(_) => todos.scroll_ofset+=1,
+				},
 				ControlChar::Left=>match todos.state {
 					State::Tree => todos.close_sel(),
 					State::Name(_) | State::Description(_) => todos.try_move_curs_left(),
@@ -608,4 +639,5 @@ fn main() {todo_loop(Todos{
 	selected:vec!(0),
 	settings:Settings::new(),
 	state: State::Tree,
+	scroll_ofset: 0,
 });}
