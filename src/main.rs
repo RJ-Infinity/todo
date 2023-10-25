@@ -127,10 +127,10 @@ impl Todo{
 		});
 		IO::write("] ");
 		let loc = 6 + indent*2;
-		if self.name.len() > width - loc{
-			IO::write(&self.name.replace('\r', " ")[..(width - loc - 1)].replace('\u{06}', "£"));
+		if self.name.chars().count() > width - loc{
+			IO::write(&self.name.replace('\r', " ").chars().take(width - loc - 1).collect::<String>());
 			IO::write("…");
-		}else{IO::write(self.name.replace('\r', " ").replace('\u{06}', "£").as_str());}
+		}else{IO::write(self.name.replace('\r', " ").as_str());}
 		IO::write("\n");
 		if std::ptr::eq(self, selected) {for c in default_colour{IO::set_colour((*c).clone());}}
 		if self.open{for child in &self.children{ child.draw(indent+1, selected, width, default_colour, select_colour); }}
@@ -486,13 +486,13 @@ impl Todos{
 	});}
 	fn try_backspace(&mut self){IF_TYPING_I!(self, i, {
 		let text = get_mut_text!(self);
-		let len = text.len();
-		if i < len{ text.remove(len-i-1); }
+		let len = text.chars().count();
+		if i < len{text.remove(text.char_indices().nth(len-i-1).unwrap().0);}
 	});}
 	fn try_backspace_word(&mut self){IF_TYPING!(self,{
 		let mut j = 0;
 		let text = get_text!(self);
-		let len =  text.len();
+		let len =  text.chars().count();
 		if len > 0 {IF_TYPING_I!(self, i, {
 			let i = len-i;
 			if text.chars().nth(i-1) == Some('\r'){
@@ -526,22 +526,23 @@ fn draw_vertical_line(height: usize, col: usize, row: usize, chr: char){ for i i
 	IO::write(&chr.to_string());
 }}
 fn write_str_with_width<F>(text: &String, width: usize, writeln: &mut F) where F: FnMut(&str){
-	// TODO: rewrite to handle multibyte chars
 	for text in text.split('\r'){
-		let mut tmp_text = &text[..];
-		while tmp_text.len() > width{
-			writeln(&(tmp_text[..width]).replace('\u{06}', "£"));
-			tmp_text = &tmp_text[width..];
+		let text_chrs = &mut text.chars();
+		loop{
+			let line: Vec<char> = text_chrs.take(width).collect();
+			let should_break = line.len() < width;
+			writeln(&String::from_iter(line));
+			if should_break{break;}
 		}
-		writeln(&tmp_text.replace('\u{06}', "£"));
 	}
 }
 fn get_curs_pos(text: &String, start: (usize, usize), width: usize, pos: usize) -> (usize, usize){
+	//TODO: make this work with chars not bytes``
 	let mut i = 0;
-	let text = &text[..text.len()-pos];
+	let text: String = text.chars().take(text.chars().count()-pos).collect();
 	let mut curr = start;
 	for text in text.split('\r'){
-		let mut text_len = text.len();
+		let mut text_len = text.chars().count();
 		while text_len > width{
 			text_len -= width;
 			i+=1;
@@ -583,7 +584,7 @@ fn todo_loop(mut todos: Todos){
 				'\x1b'=>break, // this is esc
 				'\u{7f}'=>todos.try_backspace_word(),// ctrl backspace
 				'\u{8}'=>todos.try_backspace(),
-				'\u{9c}'=>todos.try_update('\u{06}'), // this handles '£'
+				'\u{9c}'=>todos.try_update('£'),
 				chr=>if chr >= ' ' && chr <= 126 as char {todos.try_update(chr)},
 			},
 			TermChar::ControlChar(chr) => match chr{
